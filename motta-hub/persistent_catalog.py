@@ -2,7 +2,7 @@
 
 import json
 import os
-from urllib.parse import unquote, urlsplit
+from urllib.parse import parse_qsl, unquote, urlencode, urlsplit, urlunsplit
 
 
 DOCUMENTATION_TABLE = 'public.hub_documentation_catalog'
@@ -15,11 +15,17 @@ def _json_value(value):
 
 class PostgresCatalogStore:
     def __init__(self, database_url):
+        database_url = database_url.strip().strip('"').strip("'")
+        if database_url.lower().startswith('jdbc:postgresql://'):
+            database_url = database_url[5:]
         parsed = urlsplit(database_url)
-        database_name = unquote(parsed.path.lstrip('/'))
+        database_name = unquote(parsed.path.strip('/').rsplit('/', 1)[-1])
         if parsed.scheme not in ('postgres', 'postgresql') or database_name.casefold() != 'mottainai':
             raise RuntimeError('HUB_DATABASE_URL precisa apontar para o database mottainai.')
-        self.database_url = database_url
+        # JDBC drivers use currentSchema; this service deliberately writes to public.
+        query = urlencode([(key, value) for key, value in parse_qsl(parsed.query, keep_blank_values=True)
+                           if key.casefold() != 'currentschema'])
+        self.database_url = urlunsplit((parsed.scheme, parsed.netloc, parsed.path, query, parsed.fragment))
 
     @classmethod
     def from_environment(cls, required=False):
