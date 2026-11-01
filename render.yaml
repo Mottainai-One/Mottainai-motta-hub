@@ -4,7 +4,7 @@ services:
     runtime: python
     plan: free
     rootDir: motta-hub
-    buildCommand: pip install -r requirements.txt && APP_ENV=test python -m unittest -v test_server && python render_build.py
+    buildCommand: pip install -r requirements.txt && env -u RENDER_EXTERNAL_HOSTNAME APP_ENV=test python -m unittest -v test_server && python render_build.py
     startCommand: APP_ENV=production python server.py --host 0.0.0.0 --port $PORT
     healthCheckPath: /healthz
     envVars:
