@@ -118,7 +118,7 @@ class DatabaseTests(unittest.TestCase):
 class DocumentationImportTests(unittest.TestCase):
     def test_portable_paths_encoding_and_original_bytes(self):
         from import_documentations import DEFAULT_SOURCE, ROOT, import_documents
-        self.assertEqual(DEFAULT_SOURCE, ROOT / 'Docs')
+        self.assertEqual(DEFAULT_SOURCE, ROOT / 'documentation-source')
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             source, output = root / 'Docs', root / 'hub'
@@ -1563,6 +1563,24 @@ class ColumnRequestTests(unittest.TestCase):
         })
         self.assertEqual(status, 409)
         self.assertIn('já existe', json.loads(body)['error'])
+
+
+class ProductionBootstrapTests(unittest.TestCase):
+    def test_production_database_has_only_configured_accounts(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database = Path(temp_dir) / 'production.sqlite3'
+            env = {
+                'APP_ENV': 'production',
+                'BOOTSTRAP_DBA_EMAIL': 'dba@example.com',
+                'BOOTSTRAP_DBA_PASSWORD': 'temporary-production-password-dba',
+                'BOOTSTRAP_FULLSTACK_EMAIL': 'fullstack@example.com',
+                'BOOTSTRAP_FULLSTACK_PASSWORD': 'temporary-production-password-fs',
+            }
+            with patch.dict('os.environ', env, clear=True):
+                initialize_database(database)
+            with closing(sqlite3.connect(database)) as connection:
+                users = connection.execute('SELECT email, role FROM users ORDER BY role').fetchall()
+            self.assertEqual(users, [('dba@example.com', 'DBA'), ('fullstack@example.com', 'FULLSTACK')])
 
 
 if __name__ == "__main__":
