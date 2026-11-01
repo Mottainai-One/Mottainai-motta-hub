@@ -10,3 +10,5 @@ services:
     envVars:
       - key: BOOTSTRAP_USERS_JSON
         sync: false
+      - key: HUB_DATABASE_URL
+        sync: false

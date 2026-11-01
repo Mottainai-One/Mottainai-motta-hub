@@ -15,6 +15,7 @@ from contextlib import closing
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlsplit
+from persistent_catalog import PostgresCatalogStore
 
 ROOT = Path(__file__).resolve().parent
 PUBLIC_FILES = {
@@ -561,6 +562,38 @@ def read_connection(path):
     return connection
 
 
+def persistent_table(connection, table_id):
+    row = connection.execute('SELECT schema_name, name, description FROM catalog_tables WHERE id=?', (table_id,)).fetchone()
+    if row is None:
+        return None
+    return {'id': table_id, 'schema': row['schema_name'], 'name': row['name'],
+            'description': row['description'], 'columns': [dict(column) for column in connection.execute(
+                'SELECT name, description FROM table_columns WHERE table_id=? ORDER BY position', (table_id,))]}
+
+
+def restore_persistent_table_changes(database, store):
+    changes = store.load_table_changes()
+    if not changes:
+        return
+    with closing(write_connection(database)) as connection, connection:
+        connection.execute('BEGIN IMMEDIATE')
+        for table in changes:
+            if table['deleted']:
+                connection.execute('DELETE FROM catalog_tables WHERE id=?', (table['id'],))
+                continue
+            existing = connection.execute('SELECT 1 FROM catalog_tables WHERE id=?', (table['id'],)).fetchone()
+            if existing:
+                connection.execute('UPDATE catalog_tables SET schema_name=?, name=?, description=? WHERE id=?',
+                                   (table['schema'], table['name'], table['description'], table['id']))
+                connection.execute('DELETE FROM table_columns WHERE table_id=?', (table['id'],))
+            else:
+                connection.execute('INSERT INTO catalog_tables(id,schema_name,name,description) VALUES (?,?,?,?)',
+                                   (table['id'], table['schema'], table['name'], table['description']))
+            connection.executemany('INSERT INTO table_columns(table_id,name,description,position) VALUES (?,?,?,?)',
+                                   [(table['id'], column['name'], column.get('description', ''), index)
+                                    for index, column in enumerate(table['columns'])])
+
+
 def list_tables(connection, query):
     return [dict(row) for row in connection.execute("""
         SELECT id, schema_name || '.' || name AS fullName, description
@@ -722,12 +755,13 @@ class CatalogHandler(BaseHTTPRequestHandler):
                 if url.query:
                     self.send_payload(400, {'error': 'Parâmetros inválidos.'})
                     return
-                with closing(read_connection(self.server.database)) as connection:
-                    saved = connection.execute('SELECT schemas_json, documents_json FROM documentation_catalog WHERE id=1').fetchone()
-                if saved:
-                    data = {'schemas': json.loads(saved['schemas_json']), 'documents': json.loads(saved['documents_json'])}
-                else:
-                    data = json.loads((ROOT / 'documentations.json').read_text(encoding='utf-8'))
+                store = getattr(self.server, 'durable_store', None)
+                data = store.load_documentations() if store else None
+                if data is None:
+                    with closing(read_connection(self.server.database)) as connection:
+                        saved = connection.execute('SELECT schemas_json, documents_json FROM documentation_catalog WHERE id=1').fetchone()
+                    data = ({'schemas': json.loads(saved['schemas_json']), 'documents': json.loads(saved['documents_json'])}
+                            if saved else json.loads((ROOT / 'documentations.json').read_text(encoding='utf-8')))
                 self.send_payload(200, data)
                 return
             if path.startswith('/documentation-files/'):
@@ -784,6 +818,9 @@ class CatalogHandler(BaseHTTPRequestHandler):
         except (sqlite3.Error, OSError):
             logging.exception("Falha ao consultar catálogo local")
             self.send_payload(500, {"error": "Não foi possível consultar os dados. Tente novamente."})
+        except Exception:
+            logging.exception("Falha ao consultar catálogo persistente")
+            self.send_payload(500, {"error": "Não foi possível consultar os dados. Tente novamente."})
 
     do_HEAD = do_GET
 
@@ -836,7 +873,7 @@ class CatalogHandler(BaseHTTPRequestHandler):
         secure = '; Secure' if (os.environ.get('APP_ORIGIN') or os.environ.get('RENDER_EXTERNAL_URL', '')).startswith('https://') else ''
         self.send_payload(200, result, cookie=f'sid={token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=28800{secure}')
 
-    def change_column(self, table_id):
+    def change_column(self, table_id, session):
         data = self.read_json()
         adding = self.command == 'POST'
         if set(data) - ({'name', 'description'} if adding else {'name'}):
@@ -867,6 +904,9 @@ class CatalogHandler(BaseHTTPRequestHandler):
                 if not deleted.rowcount:
                     self.send_payload(404, {'error': 'Não foi possível excluir: a coluna não existe nesta tabela. Atualize a página.'})
                     return
+            store = getattr(self.server, 'durable_store', None)
+            if store:
+                store.save_table(persistent_table(connection, table_id), session['email'])
             table = get_table(connection, table_id)
         self.send_payload(201 if adding else 200, table)
 
@@ -888,7 +928,7 @@ class CatalogHandler(BaseHTTPRequestHandler):
             scripts = list_scripts(connection, table_id)
         self.send_payload(201, {'scripts': scripts})
 
-    def delete_table(self, table_id):
+    def delete_table(self, table_id, session):
         data = self.read_json()
         if (set(data) != {'confirmation', 'confirmed'}
                 or data['confirmation'] != 'DELeT@R' or data['confirmed'] is not True):
@@ -897,6 +937,11 @@ class CatalogHandler(BaseHTTPRequestHandler):
             connection.execute('BEGIN IMMEDIATE')
             if connection.execute('SELECT 1 FROM column_requests WHERE table_id=? LIMIT 1', (table_id,)).fetchone():
                 raise RequestError(409, 'Tabela com histórico de solicitações não pode ser excluída.')
+            store = getattr(self.server, 'durable_store', None)
+            if store:
+                table = persistent_table(connection, table_id)
+                if table:
+                    store.save_table(table, session['email'], deleted=True)
             deleted = connection.execute('DELETE FROM catalog_tables WHERE id=?', (table_id,))
             if not deleted.rowcount:
                 self.send_payload(404, {'error': 'Tabela não encontrada.'})
@@ -965,6 +1010,9 @@ class CatalogHandler(BaseHTTPRequestHandler):
                         if request_id is not None and (not request_id or '/' in request_id or len(request_id) > 128):
                             raise RequestError(400, 'Identificador inválido.')
                         result = mutate_request(connection, session, request_id, data)
+                        if data.get('action') == 'APPROVE' and getattr(self.server, 'durable_store', None):
+                            table = persistent_table(connection, result['tableId'])
+                            self.server.durable_store.save_table(table, session['email'])
                 self.send_payload(201 if request_route and path == '/api/requests' else 200, result)
                 return
             if documentation_route:
@@ -973,6 +1021,9 @@ class CatalogHandler(BaseHTTPRequestHandler):
                     return
                 schemas, documents = validated_documentation_catalog(self.read_json())
                 timestamp = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())
+                store = getattr(self.server, 'durable_store', None)
+                if store:
+                    store.save_documentations(schemas, documents, session['email'])
                 with closing(write_connection(self.server.database)) as connection, connection:
                     connection.execute('''INSERT INTO documentation_catalog(id,schemas_json,documents_json,updated_at)
                         VALUES (1,?,?,?) ON CONFLICT(id) DO UPDATE SET
@@ -985,7 +1036,7 @@ class CatalogHandler(BaseHTTPRequestHandler):
                 if session['role'] != 'DBA':
                     self.send_payload(403, {'error': 'Somente DBA pode excluir tabelas locais.'})
                     return
-                self.delete_table(table_id)
+                self.delete_table(table_id, session)
                 return
             if script_route:
                 if session['role'] != 'DBA':
@@ -997,7 +1048,7 @@ class CatalogHandler(BaseHTTPRequestHandler):
                 if session['role'] != 'DBA':
                     self.send_payload(403, {'error': 'Somente DBA pode adicionar ou remover colunas.'})
                     return
-                self.change_column(table_id)
+                self.change_column(table_id, session)
                 return
             if session['role'] != 'DBA':
                 self.send_payload(403, {'error':'Somente DBA pode criar tabelas.'})
@@ -1007,6 +1058,9 @@ class CatalogHandler(BaseHTTPRequestHandler):
             with closing(write_connection(self.server.database)) as connection, connection:
                 connection.execute('INSERT INTO catalog_tables VALUES (?,?,?,?)', (table_id,schema,name,description))
                 connection.executemany('INSERT INTO table_columns(table_id,name,description,position) VALUES (?,?,?,?)', [(table_id,column['name'],column.get('description',''),position) for position,column in enumerate(columns)])
+                store = getattr(self.server, 'durable_store', None)
+                if store:
+                    store.save_table(persistent_table(connection, table_id), session['email'])
             with closing(read_connection(self.server.database)) as connection:
                 self.send_payload(201, get_table(connection, table_id))
         except RequestError as error:
@@ -1020,6 +1074,10 @@ class CatalogHandler(BaseHTTPRequestHandler):
             logging.exception('Falha no catálogo local')
             self.close_connection = True
             self.send_payload(500, {'error':'Não foi possível concluir a operação.'})
+        except Exception:
+            logging.exception('Falha no armazenamento persistente do catálogo')
+            self.close_connection = True
+            self.send_payload(500, {'error':'Não foi possível concluir a operação.'})
 
     do_PUT = do_PATCH = do_OPTIONS = method_not_allowed
 
@@ -1029,6 +1087,7 @@ def create_server(database, port=8765, host='127.0.0.1'):
     server.database = Path(database).resolve()
     server.auth_lock = threading.Lock()
     server.login_failures = {}
+    server.durable_store = None
     return server
 
 
@@ -1054,7 +1113,21 @@ def main():
     initialize_database(args.database)
     if fresh_database and os.environ.get('APP_ENV', '').lower() == 'production':
         import_production_catalog(args.database)
+    production = os.environ.get('APP_ENV', '').lower() == 'production'
+    store = PostgresCatalogStore.from_environment(required=production)
+    if store:
+        store.initialize()
+        if not store.load_table_changes():
+            with closing(read_connection(args.database)) as connection:
+                table_ids = [row['id'] for row in connection.execute('SELECT id FROM catalog_tables ORDER BY schema_name,name')]
+                initial_tables = [persistent_table(connection, table_id) for table_id in table_ids]
+            store.seed_table_catalog(initial_tables)
+        restore_persistent_table_changes(args.database, store)
+        if store.load_documentations() is None:
+            catalog = json.loads((ROOT / 'documentations.json').read_text(encoding='utf-8'))
+            store.save_documentations(catalog['schemas'], catalog['documents'], 'system:catalog-seed')
     with create_server(args.database, args.port, args.host) as server:
+        server.durable_store = store
         print(f"Motta-hub ouvindo em {args.host}:{server.server_port}", flush=True)
         print(f"Banco SQLite: {args.database.resolve()}", flush=True)
         try:
