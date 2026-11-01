@@ -460,7 +460,15 @@ class APITests(unittest.TestCase):
         from urllib.parse import quote, unquote
         root = Path(__file__).resolve().parent
         documents = json.loads((root / 'documentations.json').read_text(encoding='utf-8'))['documents']
-        self.assertEqual(len(documents), 431)
+        originals_dir = root / 'documentation-files'
+        originals = {
+            path.relative_to(originals_dir).as_posix()
+            for path in originals_dir.rglob('*')
+            if path.is_file() and not path.is_symlink()
+        }
+        indexed_sources = {document['sourcePath'] for document in documents}
+        self.assertEqual(len(documents), len(indexed_sources))
+        self.assertEqual(indexed_sources, originals)
         for document in documents:
             relative = Path(document['sourcePath'])
             self.assertFalse(relative.is_absolute())
