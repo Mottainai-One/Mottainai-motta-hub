@@ -56,8 +56,10 @@ O build do frontend usa `npm run build`; a suíte da API pode ser executada com 
 
 ## Deploy no Render
 
-O Blueprint [`../render.yaml`](../render.yaml) configura o serviço web. O build executa a suíte Python e recria o catálogo a partir da planilha incluída no repositório. O servidor escuta em `0.0.0.0:$PORT`, valida o domínio HTTPS do Render e oferece `/healthz` para o health check.
+O Blueprint [`../render.yaml`](../render.yaml) configura o serviço web. O build instala `requirements.txt`, executa a suíte Python e recria o catálogo a partir da planilha incluída no repositório. O servidor escuta em `0.0.0.0:$PORT`, valida o domínio HTTPS do Render e oferece `/healthz` para o health check.
 
-No primeiro deploy, o Render gera as senhas de `BOOTSTRAP_DBA_PASSWORD` e `BOOTSTRAP_FULLSTACK_PASSWORD`. Consulte-as no painel do serviço e compartilhe-as com as pessoas autorizadas pelos canais internos da equipe. O ambiente de produção cria somente as contas correspondentes a `BOOTSTRAP_DBA_EMAIL` e `BOOTSTRAP_FULLSTACK_EMAIL`; não use credenciais de demonstração em produção.
+Em produção, configure `BOOTSTRAP_USERS_JSON` na página Environment do serviço. A variável deve conter as 12 contas com `email`, `role` e `passwordHash`; os papéis são 4 DBA, 4 FULLSTACK e 4 USER. Não inclua esse conteúdo no repositório. As senhas precisam permanecer como hashes bcrypt (`$2b$...`); o login não aceita senha em texto puro no campo `password_hash`.
+
+No plano gratuito, os dados SQLite escritos durante a execução podem se perder quando o serviço é substituído ou reiniciado. Para alterar uma senha de validação, atualize o hash bcrypt em `BOOTSTRAP_USERS_JSON` e faça um novo deploy; não grave a senha em texto puro no banco.
 
 O Blueprint usa o plano gratuito para permitir a avaliação sem custo. O sistema de arquivos desse plano é efêmero: o catálogo é reconstruído no deploy, mas alterações feitas depois podem ser perdidas quando a instância reiniciar ou for substituída. Para preservar alterações do catálogo, conecte um disco persistente em `/var/data` e configure `CATALOG_DB_PATH=/var/data/catalog.sqlite3` em um plano que suporte discos persistentes.

@@ -1569,18 +1569,41 @@ class ProductionBootstrapTests(unittest.TestCase):
     def test_production_database_has_only_configured_accounts(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             database = Path(temp_dir) / 'production.sqlite3'
+            roles = {
+                'arthur@mottainai.com': 'DBA',
+                'ana@mottainai.com': 'DBA',
+                'gustavo@mottainai.com': 'DBA',
+                'miguel@mottainai.com': 'DBA',
+                'rebecca@mottainai.com': 'FULLSTACK',
+                'kevin@mottainai.com': 'FULLSTACK',
+                'joao.vitor@mottainai.com': 'FULLSTACK',
+                'pedro@mottainai.com': 'FULLSTACK',
+                'joao@mottainai.com': 'USER',
+                'isabella@mottainai.com': 'USER',
+                'luana@mottainai.com': 'USER',
+                'giovanna@mottainai.com': 'USER',
+            }
+            bcrypt_hash = '$2b$12$' + 'A' * 53
             env = {
                 'APP_ENV': 'production',
-                'BOOTSTRAP_DBA_EMAIL': 'dba@example.com',
-                'BOOTSTRAP_DBA_PASSWORD': 'temporary-production-password-dba',
-                'BOOTSTRAP_FULLSTACK_EMAIL': 'fullstack@example.com',
-                'BOOTSTRAP_FULLSTACK_PASSWORD': 'temporary-production-password-fs',
+                'BOOTSTRAP_USERS_JSON': json.dumps([
+                    {'email': email, 'role': role, 'passwordHash': bcrypt_hash}
+                    for email, role in roles.items()
+                ]),
             }
             with patch.dict('os.environ', env, clear=True):
                 initialize_database(database)
             with closing(sqlite3.connect(database)) as connection:
-                users = connection.execute('SELECT email, role FROM users ORDER BY role').fetchall()
-            self.assertEqual(users, [('dba@example.com', 'DBA'), ('fullstack@example.com', 'FULLSTACK')])
+                users = dict(connection.execute('SELECT email, role FROM users'))
+            self.assertEqual(users, roles)
+
+    def test_bcrypt_password_hashes_are_verified(self):
+        import bcrypt
+        from server import password_matches
+
+        encoded = bcrypt.hashpw(b'simple-test-password', bcrypt.gensalt()).decode()
+        self.assertTrue(password_matches('simple-test-password', encoded))
+        self.assertFalse(password_matches('wrong-password', encoded))
 
 
 if __name__ == "__main__":

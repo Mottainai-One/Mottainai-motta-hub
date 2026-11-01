@@ -4,15 +4,9 @@ services:
     runtime: python
     plan: free
     rootDir: motta-hub
-    buildCommand: python -m unittest -v test_server && python render_build.py
+    buildCommand: pip install -r requirements.txt && python -m unittest -v test_server && python render_build.py
     startCommand: APP_ENV=production python server.py --host 0.0.0.0 --port $PORT
     healthCheckPath: /healthz
     envVars:
-      - key: BOOTSTRAP_DBA_EMAIL
-        value: databaseadmin@mottainai.com
-      - key: BOOTSTRAP_DBA_PASSWORD
-        generateValue: true
-      - key: BOOTSTRAP_FULLSTACK_EMAIL
-        value: fullstack@mottainai.com
-      - key: BOOTSTRAP_FULLSTACK_PASSWORD
-        generateValue: true
+      - key: BOOTSTRAP_USERS_JSON
+        sync: false

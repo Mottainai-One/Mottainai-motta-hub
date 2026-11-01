@@ -126,18 +126,29 @@ def migrate_auth(connection):
         expires_at INTEGER NOT NULL
     )""")
     if os.environ.get('APP_ENV', '').lower() == 'production':
-        for user_id, role, email_key, password_key in (
-            ('render-dba', 'DBA', 'BOOTSTRAP_DBA_EMAIL', 'BOOTSTRAP_DBA_PASSWORD'),
-            ('render-fullstack', 'FULLSTACK', 'BOOTSTRAP_FULLSTACK_EMAIL', 'BOOTSTRAP_FULLSTACK_PASSWORD'),
-        ):
-            email = os.environ.get(email_key, '').strip()
-            password = os.environ.get(password_key, '')
+        try:
+            bootstrap_users = json.loads(os.environ.get('BOOTSTRAP_USERS_JSON', ''))
+        except json.JSONDecodeError as error:
+            raise RuntimeError('BOOTSTRAP_USERS_JSON precisa conter uma lista JSON válida.') from error
+        if not isinstance(bootstrap_users, list) or len(bootstrap_users) != 12:
+            raise RuntimeError('BOOTSTRAP_USERS_JSON precisa conter as 12 contas configuradas para o Hub.')
+        seen_emails = set()
+        for user in bootstrap_users:
+            if not isinstance(user, dict) or set(user) != {'email', 'role', 'passwordHash'}:
+                raise RuntimeError('Cada conta precisa conter somente email, role e passwordHash.')
+            email = user['email'].strip().lower() if isinstance(user['email'], str) else ''
+            role = user['role']
+            password_hash = user['passwordHash']
+            email_key = email.casefold()
             if (not re.fullmatch(r'[^@\s]+@[^@\s]+\.[^@\s]+', email)
-                    or not 20 <= len(password) <= 256):
-                raise RuntimeError(f'Configuração inválida para {role}; confira {email_key} e {password_key}.')
-            salt = secrets.token_bytes(16)
-            digest = hashlib.scrypt(password.encode(), salt=salt, n=16384, r=8, p=1)
-            password_hash = f'scrypt${salt.hex()}${digest.hex()}'
+                    or email_key in seen_emails
+                    or not isinstance(role, str)
+                    or role not in {'DBA', 'FULLSTACK', 'USER'}
+                    or not isinstance(password_hash, str)
+                    or not re.fullmatch(r'\$2[aby]\$(?:0[4-9]|[12][0-9]|3[01])\$[./A-Za-z0-9]{53}', password_hash)):
+                raise RuntimeError('BOOTSTRAP_USERS_JSON contém e-mail, papel ou hash bcrypt inválido.')
+            seen_emails.add(email_key)
+            user_id = 'bootstrap-' + hashlib.sha256(email_key.encode()).hexdigest()[:24]
             connection.execute('INSERT INTO users VALUES (?,?,?,?)', (user_id, email, password_hash, role))
     else:
         connection.executemany("INSERT INTO users VALUES (?, ?, ?, ?)", [
@@ -441,6 +452,12 @@ def list_scripts(connection, table_id):
 
 
 def password_matches(password, encoded):
+    if encoded.startswith(('$2a$', '$2b$', '$2y$')):
+        try:
+            import bcrypt
+            return bcrypt.checkpw(password.encode(), encoded.encode('ascii'))
+        except (ImportError, ValueError, UnicodeEncodeError):
+            return False
     _, salt, expected = encoded.split('$')
     actual = hashlib.scrypt(password.encode(), salt=bytes.fromhex(salt), n=16384, r=8, p=1)
     return hmac.compare_digest(actual, bytes.fromhex(expected))

@@ -18,13 +18,15 @@ def main():
     with sqlite3.connect(database) as connection:
         table_count = connection.execute('SELECT count(*) FROM catalog_tables').fetchone()[0]
         column_count = connection.execute('SELECT count(*) FROM table_columns').fetchone()[0]
-        users = connection.execute('SELECT email, role FROM users ORDER BY role').fetchall()
+        users_by_role = dict(connection.execute('SELECT role, count(*) FROM users GROUP BY role'))
+        user_count = sum(users_by_role.values())
 
-    if table_count < 1 or column_count < 1 or len(users) != 2:
-        raise RuntimeError('O catálogo ou as contas de produção não foram inicializados corretamente.')
+    if (table_count < 1 or column_count < 1 or user_count != 12
+            or users_by_role != {'DBA': 4, 'FULLSTACK': 4, 'USER': 4}):
+        raise RuntimeError('O catálogo ou as 12 contas de produção não foram inicializados corretamente.')
     print(f"Catálogo preparado: {table_count} tabelas, {column_count} colunas; "
           f"{report['insertedTables']} tabelas e {report['insertedColumns']} colunas importadas da planilha.")
-    print('Contas de bootstrap criadas para os perfis DBA e FULLSTACK.')
+    print('Contas de produção inicializadas: 4 DBA, 4 FULLSTACK e 4 USER.')
 
 
 if __name__ == '__main__':
