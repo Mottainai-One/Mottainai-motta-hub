@@ -3,7 +3,6 @@ import json
 import logging
 import hashlib
 import hmac
-import os
 import re
 import secrets
 import time
@@ -67,8 +66,7 @@ def initialize_database(path):
                     UNIQUE(table_id, position)
                 )
             """)
-            if os.environ.get('APP_ENV', '').lower() != 'production':
-                seed_database(connection)
+            seed_database(connection)
             migrate_auth(connection)
             migrate_scripts(connection)
             migrate_requests(connection)
@@ -125,26 +123,11 @@ def migrate_auth(connection):
         csrf_token TEXT NOT NULL,
         expires_at INTEGER NOT NULL
     )""")
-    if os.environ.get('APP_ENV', '').lower() == 'production':
-        for user_id, role, email_key, password_key in (
-            ('render-dba', 'DBA', 'BOOTSTRAP_DBA_EMAIL', 'BOOTSTRAP_DBA_PASSWORD'),
-            ('render-fullstack', 'FULLSTACK', 'BOOTSTRAP_FULLSTACK_EMAIL', 'BOOTSTRAP_FULLSTACK_PASSWORD'),
-        ):
-            email = os.environ.get(email_key, '').strip()
-            password = os.environ.get(password_key, '')
-            if (not re.fullmatch(r'[^@\s]+@[^@\s]+\.[^@\s]+', email)
-                    or not 20 <= len(password) <= 256):
-                raise RuntimeError(f'Configuração inválida para {role}; confira {email_key} e {password_key}.')
-            salt = secrets.token_bytes(16)
-            digest = hashlib.scrypt(password.encode(), salt=salt, n=16384, r=8, p=1)
-            password_hash = f'scrypt${salt.hex()}${digest.hex()}'
-            connection.execute('INSERT INTO users VALUES (?,?,?,?)', (user_id, email, password_hash, role))
-    else:
-        connection.executemany("INSERT INTO users VALUES (?, ?, ?, ?)", [
-            ('demo-dba', 'databaseadmin@mottainai.com', 'scrypt$383029c7958494255121deb5762e4a49$d244240b5b5c6e3a59774d869687be630ef4d26199abd82651711723caa9834e0ca9f02c086e1cdfa289c69893e67ba1827f54e02e2adf8bd58fb55156121cb8', 'DBA'),
-            ('demo-fullstack', 'fullstack@mottainai.com', 'scrypt$ef86a24970307a7c6488aef382abd4ff$43a5eb8fa94d9eafc19d4ca4cf588acce70aed816897f281ee8a52fba3bdb1da01d3fd3772e74291e4b7945efed932ed74119e998ca788c79ba5c3c6b38ed1e1', 'FULLSTACK'),
-            ('demo-user', 'comumuser@mottainai.com', 'scrypt$c879146ba1c93d6eba96d11fde886c58$db3fa78c5967963f8cceb0151b324b3fc3a7778e979f4441ee3f78c9118d1835425307405eb6aa30d44b212e62826b1dd8b48a01f3eb580a2d679f7cb5b2d4e9', 'USER'),
-        ])
+    connection.executemany("INSERT INTO users VALUES (?, ?, ?, ?)", [
+        ('demo-dba', 'databaseadmin@mottainai.com', 'scrypt$383029c7958494255121deb5762e4a49$d244240b5b5c6e3a59774d869687be630ef4d26199abd82651711723caa9834e0ca9f02c086e1cdfa289c69893e67ba1827f54e02e2adf8bd58fb55156121cb8', 'DBA'),
+        ('demo-fullstack', 'fullstack@mottainai.com', 'scrypt$ef86a24970307a7c6488aef382abd4ff$43a5eb8fa94d9eafc19d4ca4cf588acce70aed816897f281ee8a52fba3bdb1da01d3fd3772e74291e4b7945efed932ed74119e998ca788c79ba5c3c6b38ed1e1', 'FULLSTACK'),
+        ('demo-user', 'comumuser@mottainai.com', 'scrypt$c879146ba1c93d6eba96d11fde886c58$db3fa78c5967963f8cceb0151b324b3fc3a7778e979f4441ee3f78c9118d1835425307405eb6aa30d44b212e62826b1dd8b48a01f3eb580a2d679f7cb5b2d4e9', 'USER'),
+    ])
     connection.execute('PRAGMA user_version = 2')
 
 
@@ -548,22 +531,10 @@ class CatalogHandler(BaseHTTPRequestHandler):
             self.wfile.write(payload)
 
     def valid_origin(self, required=False):
-        host = self.headers.get('Host', '')
+        host = self.headers.get('Host')
+        allowed_hosts = {f'127.0.0.1:{self.server.server_port}', f'localhost:{self.server.server_port}'}
         origin = self.headers.get('Origin')
-        render_host = os.environ.get('RENDER_EXTERNAL_HOSTNAME', '').lower()
-        if render_host:
-            try:
-                host_name = (urlsplit(f'//{host}').hostname or '').lower()
-            except ValueError:
-                host_name = ''
-            expected_origin = (os.environ.get('APP_ORIGIN') or os.environ.get('RENDER_EXTERNAL_URL', '')).rstrip('/')
-            host_allowed = host_name == render_host and expected_origin.startswith('https://')
-        else:
-            allowed_hosts = {f'127.0.0.1:{self.server.server_port}', f'localhost:{self.server.server_port}'}
-            expected_origin = f'http://{host}'
-            host_allowed = host in allowed_hosts
-        origin_allowed = origin == expected_origin if required else not origin or origin == expected_origin
-        valid = host_allowed and origin_allowed
+        valid = host in allowed_hosts and (origin == f'http://{host}' if required else not origin or origin == f'http://{host}')
         if not valid:
             self.send_payload(403, {'error': 'Origem não permitida.'})
         return valid
@@ -603,9 +574,6 @@ class CatalogHandler(BaseHTTPRequestHandler):
                 self.send_payload(400, {"error": "Endereço inválido."})
                 return
             path = unquote(url.path)
-            if path == '/healthz' and not url.query:
-                self.send_payload(200, {'ok': True})
-                return
             if path in PUBLIC_FILES:
                 name, content_type = PUBLIC_FILES[path]
                 self.send_payload(200, (ROOT / name).read_bytes(), content_type)
@@ -752,8 +720,7 @@ class CatalogHandler(BaseHTTPRequestHandler):
                 connection.execute('DELETE FROM sessions WHERE token_hash=?', (previous['token_hash'],))
             connection.execute('INSERT INTO sessions VALUES (?,?,?,?)', (hashlib.sha256(token.encode()).hexdigest(), user['id'], csrf, int(now)+28800))
         result = {'user': {key:user[key] for key in ('id','email','role')}, 'csrfToken':csrf}
-        secure = '; Secure' if (os.environ.get('APP_ORIGIN') or os.environ.get('RENDER_EXTERNAL_URL', '')).startswith('https://') else ''
-        self.send_payload(200, result, cookie=f'sid={token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=28800{secure}')
+        self.send_payload(200, result, cookie=f'sid={token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=28800')
 
     def change_column(self, table_id):
         data = self.read_json()
@@ -862,8 +829,7 @@ class CatalogHandler(BaseHTTPRequestHandler):
             if path == '/api/logout':
                 with closing(write_connection(self.server.database)) as connection, connection:
                     connection.execute('DELETE FROM sessions WHERE token_hash=?', (session['token_hash'],))
-                secure = '; Secure' if (os.environ.get('APP_ORIGIN') or os.environ.get('RENDER_EXTERNAL_URL', '')).startswith('https://') else ''
-                self.send_payload(200, {'ok':True}, cookie=f'sid=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0{secure}')
+                self.send_payload(200, {'ok':True}, cookie='sid=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0')
                 return
             if request_route or notification_route:
                 if session['role'] not in ('DBA', 'FULLSTACK'):
@@ -928,38 +894,22 @@ class CatalogHandler(BaseHTTPRequestHandler):
     do_PUT = do_PATCH = do_OPTIONS = method_not_allowed
 
 
-def create_server(database, port=8765, host='127.0.0.1'):
-    server = ThreadingHTTPServer((host, port), CatalogHandler)
+def create_server(database, port=8765):
+    server = ThreadingHTTPServer(("127.0.0.1", port), CatalogHandler)
     server.database = Path(database).resolve()
     server.auth_lock = threading.Lock()
     server.login_failures = {}
     return server
 
 
-def import_production_catalog(database):
-    from import_catalog import import_catalog
-
-    database = Path(database)
-    workbook = ROOT / 'Tracking - Mottainai - Operacional e Analitico - Centralizado.xlsx'
-    report = import_catalog(database, workbook)
-    for backup in database.parent.glob(database.stem + '.pre-xlsx-*.sqlite3'):
-        backup.unlink(missing_ok=True)
-    return report
-
-
 def main():
-    parser = argparse.ArgumentParser(description="Catálogo Mottainai Hub com autenticação e permissões por perfil.")
-    parser.add_argument("--host", default=os.environ.get('HOST', '127.0.0.1'))
-    parser.add_argument("--port", type=int, default=int(os.environ.get('PORT', '8765')))
-    parser.add_argument("--database", type=Path, default=Path(os.environ.get('CATALOG_DB_PATH', str(ROOT / "catalog.sqlite3"))))
+    parser = argparse.ArgumentParser(description="Catálogo local SQLite com login e cargos de demonstração.")
+    parser.add_argument("--port", type=int, default=8765)
+    parser.add_argument("--database", type=Path, default=ROOT / "catalog.sqlite3")
     args = parser.parse_args()
-    args.database.parent.mkdir(parents=True, exist_ok=True)
-    fresh_database = not args.database.exists()
     initialize_database(args.database)
-    if fresh_database and os.environ.get('APP_ENV', '').lower() == 'production':
-        import_production_catalog(args.database)
-    with create_server(args.database, args.port, args.host) as server:
-        print(f"Motta-hub ouvindo em {args.host}:{server.server_port}", flush=True)
+    with create_server(args.database, args.port) as server:
+        print(f"Catálogo local: http://127.0.0.1:{server.server_port}", flush=True)
         print(f"Banco SQLite: {args.database.resolve()}", flush=True)
         try:
             server.serve_forever()

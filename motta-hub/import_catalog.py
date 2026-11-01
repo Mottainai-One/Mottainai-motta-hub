@@ -177,7 +177,7 @@ def import_catalog(database, xlsx):
               'insertedTables': 0, 'insertedColumns': 0, 'conflicts': []}
     with closing(write_connection(database)) as connection, connection:
         connection.execute('BEGIN IMMEDIATE')
-        if connection.execute('PRAGMA user_version').fetchone()[0] not in (2, 4):
+        if connection.execute('PRAGMA user_version').fetchone()[0] != 2:
             raise ValueError('Versão de catálogo incompatível.')
         connection.execute('CREATE TABLE IF NOT EXISTS xlsx_sources (sha256 TEXT PRIMARY KEY, name TEXT NOT NULL)')
         connection.execute('''CREATE TABLE IF NOT EXISTS xlsx_rows (

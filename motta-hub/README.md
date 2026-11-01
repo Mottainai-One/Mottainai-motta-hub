@@ -53,11 +53,3 @@ Somente DBA pode cadastrar scripts `ALTER TABLE`. O servidor valida o envelope e
 ## Desenvolvimento
 
 O build do frontend usa `npm run build`; a suíte da API pode ser executada com `npm run test:api`.
-
-## Deploy no Render
-
-O Blueprint [`../render.yaml`](../render.yaml) configura o serviço web. O build executa a suíte Python e recria o catálogo a partir da planilha incluída no repositório. O servidor escuta em `0.0.0.0:$PORT`, valida o domínio HTTPS do Render e oferece `/healthz` para o health check.
-
-No primeiro deploy, o Render gera as senhas de `BOOTSTRAP_DBA_PASSWORD` e `BOOTSTRAP_FULLSTACK_PASSWORD`. Consulte-as no painel do serviço e compartilhe-as com as pessoas autorizadas pelos canais internos da equipe. O ambiente de produção cria somente as contas correspondentes a `BOOTSTRAP_DBA_EMAIL` e `BOOTSTRAP_FULLSTACK_EMAIL`; não use credenciais de demonstração em produção.
-
-O Blueprint usa o plano gratuito para permitir a avaliação sem custo. O sistema de arquivos desse plano é efêmero: o catálogo é reconstruído no deploy, mas alterações feitas depois podem ser perdidas quando a instância reiniciar ou for substituída. Para preservar alterações do catálogo, conecte um disco persistente em `/var/data` e configure `CATALOG_DB_PATH=/var/data/catalog.sqlite3` em um plano que suporte discos persistentes.
