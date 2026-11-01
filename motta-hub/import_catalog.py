@@ -20,6 +20,31 @@ DETAIL_HEADER = {'F': 'ID do Contrato', 'G': 'Nome do Evento', 'J': 'Nome Propri
 FIELD_LABELS = {'K': 'Descrição', 'L': 'Tipagem', 'M': 'Obrigatório', 'N': 'Exemplo de Valores',
                 'O': 'Complemento', 'P': 'Plataforma', 'Q': 'OBS', 'R': 'Métrica', 'S': 'Data Lake Table'}
 
+# Proposals for objects whose authoritative sources omit physical DDL.
+INFERRED_COLUMNS = {
+    'mottainai.inventory_count': [
+        ('inventory_count_id', 'BIGSERIAL', 'PK'),
+        ('store_id', 'INTEGER', 'NOT NULL; FK → retail_store(store_id)'),
+        ('employee_id', 'INTEGER', 'FK → employee(employee_id); responsável pela contagem'),
+        ('status', 'VARCHAR(30)', 'NOT NULL; valores sugeridos: IN_PROGRESS, COMPLETED, CANCELED'),
+        ('started_at', 'TIMESTAMPTZ', 'NOT NULL; DEFAULT CURRENT_TIMESTAMP'),
+        ('completed_at', 'TIMESTAMPTZ', 'nullable; preenchido ao concluir'),
+        ('created_at', 'TIMESTAMPTZ', 'NOT NULL; DEFAULT CURRENT_TIMESTAMP'),
+        ('updated_at', 'TIMESTAMPTZ', 'NOT NULL; atualizado em cada alteração'),
+    ],
+    'mottainai.legacy_sync_record': [
+        ('legacy_sync_record_id', 'BIGSERIAL', 'PK'),
+        ('source_system', 'VARCHAR(100)', 'NOT NULL; sistema de origem'),
+        ('source_record_id', 'TEXT', 'NOT NULL; identificador técnico de origem'),
+        ('target_system', 'VARCHAR(100)', 'NOT NULL; sistema de destino'),
+        ('target_record_id', 'TEXT', 'identificador técnico no destino'),
+        ('status', 'VARCHAR(30)', 'NOT NULL; estado da transferência'),
+        ('synchronized_at', 'TIMESTAMPTZ', 'NOT NULL; instante da transferência'),
+        ('payload_sha256', 'CHAR(64)', 'NOT NULL; SHA-256 do payload tratado, sem payload bruto'),
+    ],
+}
+INFERENCE_NOTICE = 'INFERIDO — proposta para validação; não confirmado por DDL.'
+
 
 def read_xlsx(path, resolve_merged=False):
     with zipfile.ZipFile(path) as archive:
@@ -166,6 +191,18 @@ def import_catalog(database, xlsx):
     data = xlsx.read_bytes()
     sheets, tables, structure = parse_catalog(io.BytesIO(data))
     sheets = read_xlsx(io.BytesIO(data))
+    inferred_column_count = 0
+    for key, proposals in INFERRED_COLUMNS.items():
+        table = tables.get(key)
+        if table is None or table['columns']:
+            continue
+        table['description'] = '\n'.join(filter(None, [table['description'], INFERENCE_NOTICE]))
+        for name, field_type, constraints in proposals:
+            table['columns'].append({
+                'name': name,
+                'description': f'{INFERENCE_NOTICE} Tipo sugerido: {field_type}. Restrições sugeridas: {constraints}.',
+            })
+            inferred_column_count += 1
     digest = hashlib.sha256(data).hexdigest()
     backup = database.with_name(database.stem + '.pre-xlsx-' + uuid.uuid4().hex + '.sqlite3')
     with backup.open('xb'):
@@ -174,6 +211,7 @@ def import_catalog(database, xlsx):
     with closing(read_connection(database)) as source, closing(sqlite3.connect(backup)) as destination:
         source.backup(destination)
     report = {'backup': str(backup), 'sha256': digest, 'structure': structure,
+              'inferredColumnCount': inferred_column_count,
               'insertedTables': 0, 'insertedColumns': 0, 'conflicts': []}
     with closing(write_connection(database)) as connection, connection:
         connection.execute('BEGIN IMMEDIATE')

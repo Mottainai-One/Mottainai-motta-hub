@@ -342,6 +342,21 @@ class ImportTests(DatabaseTests):
         self.assertEqual(sum(len(table['columns']) for table in tables.values() if table['schema']=='mottainai'), 723)
         self.assertEqual(sum(len(table['columns']) for table in tables.values() if table['schema']=='mottainai_analytics'), 160)
 
+    def test_real_workbook_import_adds_explicitly_inferred_fields(self):
+        xlsx = Path(__file__).resolve().parent / 'Tracking - Mottainai - Operacional e Analitico - Centralizado.xlsx'
+        report = import_catalog(self.database, xlsx)
+        self.assertEqual(report['inferredColumnCount'], 16)
+        with closing(read_connection(self.database)) as connection:
+            for table_name, expected_fields in {
+                'inventory_count': 8,
+                'legacy_sync_record': 8,
+            }.items():
+                table = connection.execute('SELECT id FROM catalog_tables WHERE schema_name="mottainai" AND name=?', (table_name,)).fetchone()
+                self.assertIsNotNone(table)
+                fields = connection.execute('SELECT name, description FROM table_columns WHERE table_id=?', (table['id'],)).fetchall()
+                self.assertEqual(len(fields), expected_fields)
+                self.assertTrue(all('INFERIDO' in field['description'] and 'não confirmado por DDL' in field['description'] for field in fields))
+
 
 class OverviewTests(DatabaseTests):
     def test_metrics_include_local_changes_and_ignore_blank_descriptions(self):
@@ -384,6 +399,8 @@ class APITests(unittest.TestCase):
         self.cookie = ''
         self.csrf = ''
         self.server.login_failures.clear()
+        with closing(sqlite3.connect(self.database)) as connection, connection:
+            connection.execute('DELETE FROM documentation_catalog')
         self.login_as('USER')
 
     def login_as(self, role):
@@ -455,6 +472,21 @@ class APITests(unittest.TestCase):
             self.cookie = ''
             self.assertEqual(self.request('/api/documentations')[0], 401)
             self.assertEqual(self.request(url)[0], 401)
+
+    def test_documentation_catalog_changes_persist_and_require_dba(self):
+        catalog = {
+            'schemas': ['persist-test'],
+            'documents': [{'id': 'persist-test-doc', 'schema': 'persist-test', 'title': 'Guia persistente', 'content': 'Conteúdo gravado no servidor.'}],
+        }
+        status, _, _ = self.request('/api/documentations', 'POST', body=catalog)
+        self.assertEqual(status, 403)
+        self.login_as('DBA')
+        status, _, body = self.request('/api/documentations', 'POST', body=catalog)
+        self.assertEqual(status, 200, body)
+        self.login_as('USER')
+        status, _, body = self.request('/api/documentations')
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(body), catalog)
 
     def test_all_corpus_originals_get_head_and_hashes(self):
         from urllib.parse import quote, unquote

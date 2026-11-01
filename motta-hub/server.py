@@ -204,6 +204,12 @@ def migrate_requests(connection):
         read_at TEXT
     )""")
     connection.execute('CREATE INDEX IF NOT EXISTS notifications_by_user ON notifications(user_id, id DESC)')
+    connection.execute("""CREATE TABLE IF NOT EXISTS documentation_catalog (
+        id INTEGER PRIMARY KEY CHECK(id = 1),
+        schemas_json TEXT NOT NULL,
+        documents_json TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+    )""")
     connection.execute('PRAGMA user_version = 4')
 
 
@@ -226,6 +232,58 @@ def request_columns(columns):
     if not columns:
         raise RequestError(400, 'Informe pelo menos uma coluna.')
     return [{'name': column['name'], 'description': column.get('description', '')} for column in columns]
+
+
+def validated_documentation_catalog(data):
+    if not isinstance(data, dict) or set(data) != {'schemas', 'documents'}:
+        raise ValueError('Catálogo de documentações inválido.')
+    schemas, documents = data['schemas'], data['documents']
+    if not isinstance(schemas, list) or not isinstance(documents, list) or len(schemas) > 128 or len(documents) > 500:
+        raise ValueError('Quantidade de seções ou documentos inválida.')
+    normalized_schemas = set()
+    for schema in schemas:
+        if not isinstance(schema, str) or not schema.strip() or len(schema) > 128:
+            raise ValueError('Nome de seção inválido.')
+        key = schema.casefold()
+        if key in normalized_schemas:
+            raise ValueError('Seções repetidas.')
+        normalized_schemas.add(key)
+    clean_documents, seen_ids = [], set()
+    allowed = {'id', 'schema', 'title', 'content', 'sourcePath', 'sourceUrl', 'filename', 'format'}
+    for document in documents:
+        if not isinstance(document, dict) or set(document) - allowed:
+            raise ValueError('Documento inválido.')
+        if not {'id', 'schema', 'title', 'content'} <= set(document):
+            raise ValueError('Documento sem identificador, seção, título ou conteúdo.')
+        identifier, schema, title, content = (document[key] for key in ('id', 'schema', 'title', 'content'))
+        if (not isinstance(identifier, str) or not identifier.strip() or len(identifier) > 512
+                or identifier in seen_ids or not isinstance(schema, str) or schema.casefold() not in normalized_schemas
+                or not isinstance(title, str) or not title.strip() or len(title) > 160
+                or not isinstance(content, str) or len(content) > 200_000
+                or not content.strip() and not document.get('sourceUrl')):
+            raise ValueError('Identificador, seção, título ou conteúdo de documento inválido.')
+        seen_ids.add(identifier)
+        clean = {'id': identifier, 'schema': schema, 'title': title, 'content': content}
+        source_path = document.get('sourcePath')
+        if source_path is not None:
+            if (not isinstance(source_path, str) or not source_path or source_path.startswith(('/', '\\'))
+                    or '\\' in source_path or any(part in ('', '.', '..') for part in source_path.split('/'))):
+                raise ValueError('Caminho de origem inválido.')
+            clean['sourcePath'] = source_path
+        source_url = document.get('sourceUrl')
+        if source_url is not None:
+            if not isinstance(source_url, str) or not source_url.startswith('/documentation-files/') or '?' in source_url or '#' in source_url:
+                raise ValueError('URL de origem inválida.')
+            clean['sourceUrl'] = source_url
+        for key in ('filename', 'format'):
+            value = document.get(key)
+            if value is not None:
+                limit = 255 if key == 'filename' else 32
+                if not isinstance(value, str) or len(value) > limit:
+                    raise ValueError('Metadado de origem inválido.')
+                clean[key] = value
+        clean_documents.append(clean)
+    return schemas, clean_documents
 
 
 def check_request_columns(connection, table_id, columns):
@@ -664,7 +722,13 @@ class CatalogHandler(BaseHTTPRequestHandler):
                 if url.query:
                     self.send_payload(400, {'error': 'Parâmetros inválidos.'})
                     return
-                self.send_payload(200, json.loads((ROOT / 'documentations.json').read_text(encoding='utf-8')))
+                with closing(read_connection(self.server.database)) as connection:
+                    saved = connection.execute('SELECT schemas_json, documents_json FROM documentation_catalog WHERE id=1').fetchone()
+                if saved:
+                    data = {'schemas': json.loads(saved['schemas_json']), 'documents': json.loads(saved['documents_json'])}
+                else:
+                    data = json.loads((ROOT / 'documentations.json').read_text(encoding='utf-8'))
+                self.send_payload(200, data)
                 return
             if path.startswith('/documentation-files/'):
                 relative = path.removeprefix('/documentation-files/')
@@ -858,13 +922,14 @@ class CatalogHandler(BaseHTTPRequestHandler):
             column_route = path.startswith('/api/tables/') and path.endswith('/columns')
             script_route = path.startswith('/api/tables/') and path.endswith('/scripts')
             table_route = self.command == 'DELETE' and path.startswith('/api/tables/') and not column_route and not script_route
+            documentation_route = path == '/api/documentations'
             suffix = '/scripts' if script_route else '/columns'
             table_id = path[len('/api/tables/'):-len(suffix)] if column_route or script_route else path[len('/api/tables/'):] if table_route else None
             if (column_route or script_route or table_route) and (not table_id or '/' in table_id or len(table_id) > 128):
                 raise ValueError('Identificador inválido.')
             request_route = path == '/api/requests' or path.startswith('/api/requests/')
             notification_route = path == '/api/notifications/read'
-            if not column_route and not script_route and not table_route and not request_route and not notification_route and path not in ('/api/login','/api/logout','/api/tables'):
+            if not column_route and not script_route and not table_route and not request_route and not notification_route and not documentation_route and path not in ('/api/login','/api/logout','/api/tables'):
                 self.send_payload(404, {'error':'Recurso não encontrado.'})
                 return
             if path == '/api/login':
@@ -901,6 +966,20 @@ class CatalogHandler(BaseHTTPRequestHandler):
                             raise RequestError(400, 'Identificador inválido.')
                         result = mutate_request(connection, session, request_id, data)
                 self.send_payload(201 if request_route and path == '/api/requests' else 200, result)
+                return
+            if documentation_route:
+                if session['role'] != 'DBA':
+                    self.send_payload(403, {'error': 'Somente DBA pode alterar as documentações do catálogo.'})
+                    return
+                schemas, documents = validated_documentation_catalog(self.read_json())
+                timestamp = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())
+                with closing(write_connection(self.server.database)) as connection, connection:
+                    connection.execute('''INSERT INTO documentation_catalog(id,schemas_json,documents_json,updated_at)
+                        VALUES (1,?,?,?) ON CONFLICT(id) DO UPDATE SET
+                        schemas_json=excluded.schemas_json, documents_json=excluded.documents_json,
+                        updated_at=excluded.updated_at''',
+                        (json.dumps(schemas, ensure_ascii=False), json.dumps(documents, ensure_ascii=False), timestamp))
+                self.send_payload(200, {'schemas': schemas, 'documents': documents})
                 return
             if table_route:
                 if session['role'] != 'DBA':

@@ -25,7 +25,9 @@ def main():
             or users_by_role != {'DBA': 4, 'FULLSTACK': 4, 'USER': 4}):
         raise RuntimeError('O catálogo ou as 12 contas de produção não foram inicializados corretamente.')
     print(f"Catálogo preparado: {table_count} tabelas, {column_count} colunas; "
-          f"{report['insertedTables']} tabelas e {report['insertedColumns']} colunas importadas da planilha.")
+          f"{report['insertedTables']} tabelas, "
+          f"{report['insertedColumns'] - report['inferredColumnCount']} colunas documentadas e "
+          f"{report['inferredColumnCount']} propostas inferidas.")
     print('Contas de produção inicializadas: 4 DBA, 4 FULLSTACK e 4 USER.')
 
 
