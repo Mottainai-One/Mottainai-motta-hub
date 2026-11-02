@@ -45,7 +45,27 @@ jobs:
         run: python -m unittest -v test_server
 
       - name: Build documentation catalog
-        run: python render_build.py
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          import subprocess
+
+          roles = {
+              "arthur@mottainai.com": "DBA", "ana@mottainai.com": "DBA",
+              "gustavo@mottainai.com": "DBA", "miguel@mottainai.com": "DBA",
+              "rebecca@mottainai.com": "FULLSTACK", "kevin@mottainai.com": "FULLSTACK",
+              "joao.vitor@mottainai.com": "FULLSTACK", "pedro@mottainai.com": "FULLSTACK",
+              "joao@mottainai.com": "USER", "isabella@mottainai.com": "USER",
+              "luana@mottainai.com": "USER", "giovanna@mottainai.com": "USER",
+          }
+          fake_hash = "$2b$12$" + "A" * 53
+          os.environ["BOOTSTRAP_USERS_JSON"] = json.dumps([
+              {"email": email, "role": role, "passwordHash": fake_hash}
+              for email, role in roles.items()
+          ])
+          subprocess.run(["python", "render_build.py"], check=True)
+          PY
 
   deploy:
     name: Deploy to Render
@@ -69,3 +89,4 @@ jobs:
             200|202) echo "Render accepted deployment request (HTTP $status)." ;;
             *) echo "Render rejected deployment request (HTTP $status)." >&2; exit 1 ;;
           esac
+
