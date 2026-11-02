@@ -130,7 +130,7 @@ class DocumentationImportTests(unittest.TestCase):
             original.write_bytes(data)
             report = import_documents(source, output)
             self.assertTrue(report['written'])
-            document = json.loads((output / 'documentations.json').read_text())['documents'][0]
+            document = json.loads((output / 'documentations.json').read_text(encoding='utf-8'))['documents'][0]
             self.assertEqual(document['sourcePath'], 'schema/guia ç # %.md')
             self.assertEqual(document['sourceUrl'], '/documentation-files/schema/guia%20%C3%A7%20%23%20%25.md')
             self.assertEqual(document['content'], data.decode())
