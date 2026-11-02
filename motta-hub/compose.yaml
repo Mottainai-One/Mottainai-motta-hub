@@ -1,0 +1,41 @@
+services:
+  database:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: mottainai
+      POSTGRES_USER: mottainai
+      POSTGRES_PASSWORD: local-development-only
+    volumes:
+      - hub-database:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U mottainai -d mottainai"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+  hub:
+    build: .
+    depends_on:
+      database:
+        condition: service_healthy
+    environment:
+      APP_ENV: development
+      HOST: 0.0.0.0
+      PORT: 8766
+      CATALOG_DB_PATH: /data/catalog.sqlite3
+      HUB_DATABASE_URL: postgresql://mottainai:local-development-only@database:5432/mottainai
+    ports:
+      - "127.0.0.1:8766:8766"
+    volumes:
+      - hub-catalog:/data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8766/healthz', timeout=2)"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 10s
+
+volumes:
+  hub-catalog:
+  hub-database:
+

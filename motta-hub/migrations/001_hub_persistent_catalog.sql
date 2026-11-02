@@ -7,7 +7,6 @@ CREATE TABLE IF NOT EXISTS public.hub_documentation_catalog (
     updated_by_email text NOT NULL,
     updated_at timestamptz NOT NULL DEFAULT now()
 );
-
 CREATE TABLE IF NOT EXISTS public.hub_table_catalog (
     table_id text PRIMARY KEY,
     schema_name text NOT NULL,
@@ -18,4 +17,3 @@ CREATE TABLE IF NOT EXISTS public.hub_table_catalog (
     updated_by_email text NOT NULL,
     updated_at timestamptz NOT NULL DEFAULT now()
 );
-

@@ -54,9 +54,29 @@ Somente DBA pode cadastrar scripts `ALTER TABLE`. O servidor valida o envelope e
 
 O build do frontend usa `npm run build`; a suíte da API pode ser executada com `npm run test:api`.
 
+## Executar com Docker Compose
+
+Com Docker Desktop ou Docker Engine ativo, na pasta `motta-hub` execute:
+
+```bash
+docker compose up --build --wait
+```
+
+Abra `http://127.0.0.1:8766`. O Compose inicia o Hub e um PostgreSQL local com volumes nomeados e aguarda os health checks. O banco usa credenciais demonstrativas e a porta fica disponível somente no loopback; esta configuração é para desenvolvimento, não produção. Pare os serviços com `docker compose down`; use `docker compose down --volumes` para remover também os dados locais.
+
+Para reproduzir a validação executada na implantação:
+
+```bash
+python -m pip install -r requirements.txt
+python -m unittest -v test_server
+python render_build.py
+```
+
 ## Deploy no Render
 
 O Blueprint [`../render.yaml`](../render.yaml) configura o serviço web. O build instala `requirements.txt`, executa a suíte Python e recria o catálogo a partir da planilha incluída no repositório. O servidor escuta em `0.0.0.0:$PORT`, valida o domínio HTTPS do Render e oferece `/healthz` para o health check.
+
+O arquivo Blueprint é configuração versionada; por si só, não comprova que o serviço esteja criado ou acessível. A automação de implantação está em [`.github/workflows/ci-cd.yml`](../.github/workflows/ci-cd.yml): PRs executam testes; pushes aprovados em `main` podem acionar o deploy após a CI. O Blueprint desativa deploy automático do provedor para que a Action controle a promoção. Configure o segredo `RENDER_DEPLOY_HOOK_URL` nas Actions do GitHub usando a URL privada obtida no Render. Sem esse segredo, a etapa de deploy informa que foi ignorada; não considere a aplicação publicada.
 
 Em produção, configure `BOOTSTRAP_USERS_JSON` na página Environment do serviço. A variável deve conter as 12 contas com `email`, `role` e `passwordHash`; os papéis são 4 DBA, 4 FULLSTACK e 4 USER. Não inclua esse conteúdo no repositório. As senhas precisam permanecer como hashes bcrypt (`$2b$...`); o login não aceita senha em texto puro no campo `password_hash`.
 
@@ -67,3 +87,6 @@ O Blueprint mantém o serviço web no plano gratuito. Para persistir alteraçõe
 `hub_documentation_catalog` armazena o catálogo completo de seções/documentos em JSONB, com data e autor da última gravação. `hub_table_catalog` mantém o estado persistido de cada tabela do catálogo, incluindo colunas, descrições e marcadores de exclusão. No primeiro início com banco vazio, a aplicação grava a documentação e o tracking atuais como base; depois grava cada alteração feita no Hub. O catálogo operacional continua sendo metadado do Hub: nenhuma tabela de negócio é criada ou alterada.
 
 No Render, adicione `HUB_DATABASE_URL` nas variáveis de ambiente do serviço, apontando para o database `mottainai` com conectividade de rede permitida pelo provedor do PostgreSQL. Use a URL privada quando o banco estiver na mesma rede privada. Não coloque a URL no repositório nem em mensagens. Sem a variável, o serviço de produção não inicia para evitar continuar aceitando alterações sem persistência durável.
+
+Não há alocação ou deploy na AWS nesta configuração. A hospedagem prevista para este Hub é Render com PostgreSQL Aiven existente; ativá-la requer criar/sincronizar o Blueprint, provisionar os segredos no painel do Render e cadastrar o deploy hook como segredo do GitHub. Não publique contas, hashes, URLs de conexão ou hooks no Git.
+
