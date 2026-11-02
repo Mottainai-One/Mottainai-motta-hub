@@ -67,6 +67,18 @@ jobs:
           subprocess.run(["python", "render_build.py"], check=True)
           PY
 
+      - name: Start containerized Hub and PostgreSQL
+        run: docker compose up --build --detach --wait
+
+      - name: Verify container health and API
+        run: |
+          curl --fail --silent --show-error http://127.0.0.1:8766/healthz
+          curl --fail --silent --show-error http://127.0.0.1:8766/api/documentations > /dev/null
+
+      - name: Stop containerized services
+        if: always()
+        run: docker compose down --volumes
+
   deploy:
     name: Deploy to Render
     needs: validate
