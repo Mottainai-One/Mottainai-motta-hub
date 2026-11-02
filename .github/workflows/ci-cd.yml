@@ -73,7 +73,30 @@ jobs:
       - name: Verify container health and API
         run: |
           curl --fail --silent --show-error http://127.0.0.1:8766/healthz
-          curl --fail --silent --show-error http://127.0.0.1:8766/api/documentations > /dev/null
+          python - <<'PY'
+          import http.cookiejar
+          import json
+          import urllib.request
+
+          base_url = "http://127.0.0.1:8766"
+          cookies = http.cookiejar.CookieJar()
+          client = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(cookies))
+          login = urllib.request.Request(
+              f"{base_url}/api/login",
+              data=json.dumps({
+                  "email": "databaseadmin@mottainai.com",
+                  "password": "senha@DBA1",
+              }).encode(),
+              headers={"Content-Type": "application/json"},
+              method="POST",
+          )
+          with client.open(login) as response:
+              assert response.status == 200
+          with client.open(f"{base_url}/api/documentations") as response:
+              catalog = json.load(response)
+          assert catalog["schemas"] and catalog["documents"]
+          print("Authenticated documentation API smoke test passed.")
+          PY
 
       - name: Stop containerized services
         if: always()
