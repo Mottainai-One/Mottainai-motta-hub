@@ -87,7 +87,7 @@ jobs:
                   "email": "databaseadmin@mottainai.com",
                   "password": "senha@DBA1",
               }).encode(),
-              headers={"Content-Type": "application/json"},
+              headers={"Content-Type": "application/json", "Origin": base_url},
               method="POST",
           )
           with client.open(login) as response:
