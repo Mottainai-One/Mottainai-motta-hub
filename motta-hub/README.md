@@ -54,6 +54,16 @@ Somente DBA pode cadastrar scripts `ALTER TABLE`. O servidor valida o envelope e
 
 O build do frontend usa `npm run build`; a suíte da API pode ser executada com `npm run test:api`.
 
+## Executar com Docker Compose
+
+Com Docker Desktop ou Docker Engine ativo, na pasta `motta-hub` execute:
+
+```bash
+docker compose up --build --wait
+```
+
+Abra `http://127.0.0.1:8766`. O Compose inicia o Hub e um PostgreSQL local com volumes nomeados e aguarda os health checks. O banco usa credenciais demonstrativas e a porta fica disponível somente no loopback; esta configuração é para desenvolvimento, não produção. Pare os serviços com `docker compose down`; use `docker compose down --volumes` para remover também os dados locais.
+
 Para reproduzir a validação executada na implantação:
 
 ```bash
@@ -79,3 +89,4 @@ O Blueprint mantém o serviço web no plano gratuito. Para persistir alteraçõe
 No Render, adicione `HUB_DATABASE_URL` nas variáveis de ambiente do serviço, apontando para o database `mottainai` com conectividade de rede permitida pelo provedor do PostgreSQL. Use a URL privada quando o banco estiver na mesma rede privada. Não coloque a URL no repositório nem em mensagens. Sem a variável, o serviço de produção não inicia para evitar continuar aceitando alterações sem persistência durável.
 
 Não há alocação ou deploy na AWS nesta configuração. A hospedagem prevista para este Hub é Render com PostgreSQL Aiven existente; ativá-la requer criar/sincronizar o Blueprint, provisionar os segredos no painel do Render e cadastrar o deploy hook como segredo do GitHub. Não publique contas, hashes, URLs de conexão ou hooks no Git.
+
