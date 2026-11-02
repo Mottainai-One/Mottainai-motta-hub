@@ -2,7 +2,7 @@
 
 Catálogo local de metadados e biblioteca de documentação do Mottainai. Reúne tabelas, colunas, scripts documentais e materiais organizados por área.
 
-**O hub não é um banco transacional e não executa SQL.** Alterações afetam o catálogo SQLite local; não alteram o banco de origem nem executam scripts.
+**O hub não é um banco transacional e não executa SQL.** Alterações afetam o catálogo de metadados do Hub, com persistência no SQLite local e no PostgreSQL configurado para produção; não alteram tabelas operacionais nem executam scripts.
 
 ## Executar
 
@@ -60,6 +60,10 @@ O Blueprint [`../render.yaml`](../render.yaml) configura o serviço web. O build
 
 Em produção, configure `BOOTSTRAP_USERS_JSON` na página Environment do serviço. A variável deve conter as 12 contas com `email`, `role` e `passwordHash`; os papéis são 4 DBA, 4 FULLSTACK e 4 USER. Não inclua esse conteúdo no repositório. As senhas precisam permanecer como hashes bcrypt (`$2b$...`); o login não aceita senha em texto puro no campo `password_hash`.
 
-No plano gratuito, os dados SQLite escritos durante a execução podem se perder quando o serviço é substituído ou reiniciado. Para alterar uma senha de validação, atualize o hash bcrypt em `BOOTSTRAP_USERS_JSON` e faça um novo deploy; não grave a senha em texto puro no banco.
+Para alterar uma senha de validação, atualize o hash bcrypt em `BOOTSTRAP_USERS_JSON` e faça um novo deploy; não grave a senha em texto puro no banco.
 
-O Blueprint usa o plano gratuito para permitir a avaliação sem custo. O sistema de arquivos desse plano é efêmero: o catálogo é reconstruído no deploy, mas alterações feitas depois podem ser perdidas quando a instância reiniciar ou for substituída. Para preservar alterações do catálogo, conecte um disco persistente em `/var/data` e configure `CATALOG_DB_PATH=/var/data/catalog.sqlite3` em um plano que suporte discos persistentes.
+O Blueprint mantém o serviço web no plano gratuito. Para persistir alterações mesmo quando esse serviço reiniciar ou sair do spin-down, configure `HUB_DATABASE_URL` com a URL de conexão do database PostgreSQL `MOTTAINAI`. São aceitos os formatos `postgresql://...` e `jdbc:postgresql://...`; o parâmetro JDBC `currentSchema` é ignorado porque o Hub grava explicitamente em `public`. Em produção, a aplicação exige essa variável e cria/atualiza as tabelas `public.hub_documentation_catalog` e `public.hub_table_catalog` durante a inicialização. O usuário PostgreSQL precisa ter acesso ao schema `public` e permissão para criar essas tabelas e índices. O SQL equivalente está em [`migrations/001_hub_persistent_catalog.sql`](migrations/001_hub_persistent_catalog.sql).
+
+`hub_documentation_catalog` armazena o catálogo completo de seções/documentos em JSONB, com data e autor da última gravação. `hub_table_catalog` mantém o estado persistido de cada tabela do catálogo, incluindo colunas, descrições e marcadores de exclusão. No primeiro início com banco vazio, a aplicação grava a documentação e o tracking atuais como base; depois grava cada alteração feita no Hub. O catálogo operacional continua sendo metadado do Hub: nenhuma tabela de negócio é criada ou alterada.
+
+No Render, adicione `HUB_DATABASE_URL` nas variáveis de ambiente do serviço, apontando para o database `mottainai` com conectividade de rede permitida pelo provedor do PostgreSQL. Use a URL privada quando o banco estiver na mesma rede privada. Não coloque a URL no repositório nem em mensagens. Sem a variável, o serviço de produção não inicia para evitar continuar aceitando alterações sem persistência durável.

@@ -611,9 +611,11 @@ function DocumentationContent({ doc, documents, term, onOpen }: { doc: Documenta
 }
 
 function Documentations({ documents, documentationSchemas, onChanged, onSectionCreated, term, onSearch, schema, onSchemaChange, documentId, anchor }: {
-  documents: Documentation[]; documentationSchemas: string[]; onChanged: (documents: Documentation[]) => void; onSectionCreated: (name: string) => void; term: string; onSearch: SearchHandler;
+  documents: Documentation[]; documentationSchemas: string[]; onChanged: (documents: Documentation[]) => Promise<void>; onSectionCreated: (name: string) => Promise<void>; term: string; onSearch: SearchHandler;
   schema: string; onSchemaChange: (schema: string) => void; documentId: string; anchor: string;
 }) {
+  const auth = useContext(AuthContext)!;
+  const canManage = auth.user.role === 'DBA';
   const [sectionName, setSectionName] = useState<string | null>(null);
   const [sectionError, setSectionError] = useState('');
   const sectionInput = useRef<HTMLInputElement>(null);
@@ -623,6 +625,7 @@ function Documentations({ documents, documentationSchemas, onChanged, onSectionC
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
+  const [saving, setSaving] = useState(false);
   const titleInput = useRef<HTMLInputElement>(null);
   const newButton = useRef<HTMLButtonElement>(null);
   const dialog = useRef<HTMLDialogElement>(null);
@@ -642,8 +645,9 @@ function Documentations({ documents, documentationSchemas, onChanged, onSectionC
   const creatingSection = sectionName !== null;
   useEffect(() => { if (creatingSection) sectionInput.current?.focus(); }, [creatingSection]);
   function closeSectionForm() { setSectionName(null); setSectionError(''); sectionButton.current?.focus(); }
-  function saveSection(event: FormEvent<HTMLFormElement>) {
+  async function saveSection(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (saving) return;
     const name = sectionName?.trim() ?? '';
     if (!name || name.length > 128) {
       setSectionError('Informe um nome de seção de 1 a 128 caracteres, sem usar apenas espaços.');
@@ -655,23 +659,47 @@ function Documentations({ documents, documentationSchemas, onChanged, onSectionC
       sectionInput.current?.focus();
       return;
     }
-    onSectionCreated(name);
-    setMessage('Seção adicionada no catálogo desta sessão.');
-    closeSectionForm();
+    setSaving(true); setSectionError('');
+    try {
+      await onSectionCreated(name);
+      setMessage('Seção salva no catálogo do Hub.');
+      closeSectionForm();
+    } catch (cause) {
+      setSectionError(cause instanceof Error ? cause.message : 'Não foi possível salvar a seção.');
+    } finally { setSaving(false); }
   }
   function dismissRemoval() {
+    if (saving) return;
     dialog.current?.close(); setRemoving(null); removeTrigger.current?.focus();
   }
   function closeForm() { setDraft(null); setError(''); newButton.current?.focus(); }
-  function save(event: FormEvent<HTMLFormElement>) {
+  async function save(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!draft) return;
+    if (!draft || saving) return;
     const title = draft.title.trim(), content = draft.content.trim();
     if (!title || !content) { setError('Preencha o título e o conteúdo sem usar apenas espaços.'); return; }
     const document = { ...documents.find(item => item.id === draft.id), id: draft.id ?? crypto.randomUUID(), schema: draft.schema, title, content };
-    onChanged(draft.id ? documents.map(item => item.id === draft.id ? document : item) : [...documents, document]);
-    setMessage(draft.id ? 'Documentação atualizada no catálogo desta sessão.' : 'Documentação adicionada no catálogo desta sessão.');
-    closeForm();
+    const nextDocuments = draft.id ? documents.map(item => item.id === draft.id ? document : item) : [...documents, document];
+    setSaving(true); setError('');
+    try {
+      await onChanged(nextDocuments);
+      setMessage(draft.id ? 'Documentação atualizada no catálogo do Hub.' : 'Documentação adicionada ao catálogo do Hub.');
+      closeForm();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'Não foi possível salvar a documentação.');
+    } finally { setSaving(false); }
+  }
+  async function removeDocument() {
+    if (!removing || saving) return;
+    setSaving(true); setError('');
+    try {
+      await onChanged(documents.filter(item => item.id !== removing.id));
+      if (draft?.id === removing.id) setDraft(null);
+      setMessage('Documentação removida do catálogo do Hub.');
+      dismissRemoval(); newButton.current?.focus();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'Não foi possível excluir a documentação.');
+    } finally { setSaving(false); }
   }
   const filtered = documents.filter(item => (!schema || item.schema === schema) && fold(`${item.title} ${item.content}`).includes(fold(term.trim())));
   const selected = documents.find(item => item.id === documentId);
@@ -679,26 +707,26 @@ function Documentations({ documents, documentationSchemas, onChanged, onSectionC
   const groups = [...new Set([...documentationSchemas, ...visible.map(item => item.schema)])];
   return <>
     <nav className="breadcrumbs" aria-label="Caminho de navegação"><span>Motta-hub</span><span className="separator" aria-hidden="true">›</span><span aria-current="page">Documentações</span></nav>
-    <div className="heading-actions"><div className="page-heading"><h1>Documentações</h1><p>Navegue pelos conteúdos do Mottainai. Clique em um título para expandir.</p></div><div className="table-detail-actions"><button ref={sectionButton} className="btn secondary" type="button" aria-expanded={creatingSection} aria-controls="documentation-section-form" onClick={() => { setSectionName(''); setSectionError(''); setMessage(''); }}>Nova seção</button><button ref={newButton} className="btn" type="button" aria-expanded={draft !== null} aria-controls="documentation-form" onClick={() => { setDraft({ id: null, schema: documentationSchemas.find(value => value === schema) ?? documentationSchemas[0] ?? '', title: '', content: '' }); setError(''); setMessage(''); }}>Nova documentação</button></div></div>
-    <p className="documentation-notice">Documentos importados do Mottainai-Hub. Cada pasta de Docs corresponde a uma seção. Alterações neste catálogo ficam somente na sessão; os arquivos originais não são modificados.</p>
+    <div className="heading-actions"><div className="page-heading"><h1>Documentações</h1><p>Navegue pelos conteúdos do Mottainai. Clique em um título para expandir.</p></div>{canManage ? <div className="table-detail-actions"><button ref={sectionButton} className="btn secondary" type="button" aria-expanded={creatingSection} aria-controls="documentation-section-form" onClick={() => { setSectionName(''); setSectionError(''); setMessage(''); }}>Nova seção</button><button ref={newButton} className="btn" type="button" aria-expanded={draft !== null} aria-controls="documentation-form" onClick={() => { setDraft({ id: null, schema: documentationSchemas.find(value => value === schema) ?? documentationSchemas[0] ?? '', title: '', content: '' }); setError(''); setMessage(''); }}>Nova documentação</button></div> : null}</div>
+    <p className="documentation-notice">Documentos importados do Mottainai-Hub. Cada pasta de Docs corresponde a uma seção. Alterações feitas por DBA são salvas no catálogo do Hub; os arquivos originais não são modificados.</p>
     <form className="search-form" role="search" onSubmit={event => { event.preventDefault(); onSearch(term.trim()); }}>
       <div className="search-field"><label htmlFor="documentation-schema-filter">Seção</label><select id="documentation-schema-filter" value={schema} onChange={event => onSchemaChange(event.target.value)}><option value="">Todas as seções</option>{documentationSchemas.map(value => <option key={value} value={value}>{value}</option>)}{schema && !documentationSchemas.some(value => value === schema) ? <option value={schema}>Seção desconhecida</option> : null}</select></div>
       <div className="search-field"><label htmlFor="documentation-search">Título ou conteúdo</label><input id="documentation-search" type="search" placeholder="Buscar documentação" maxLength={256} value={term} onChange={event => onSearch(event.target.value, true)} /></div>
       <button className="btn secondary" type="submit">Pesquisar</button>{term ? <button className="btn tertiary" type="button" onClick={() => onSearch('', true)}>Limpar pesquisa</button> : null}
     </form>
-    {creatingSection ? <form id="documentation-section-form" className="catalog-form form-section column-create" aria-labelledby="documentation-section-title" onSubmit={saveSection}>
+    {creatingSection && canManage ? <form id="documentation-section-form" className="catalog-form form-section column-create" aria-labelledby="documentation-section-title" aria-busy={saving} onSubmit={event => { void saveSection(event); }}>
       <h2 className="columns-heading" id="documentation-section-title">Nova seção</h2>
-      <div className="form-field"><label htmlFor="documentation-section-name">Nome da seção</label><input ref={sectionInput} id="documentation-section-name" required maxLength={128} value={sectionName} aria-invalid={!!sectionError} aria-describedby={sectionError ? 'documentation-section-error' : undefined} onChange={event => { setSectionName(event.target.value); setSectionError(''); }} /></div>
+      <div className="form-field"><label htmlFor="documentation-section-name">Nome da seção</label><input ref={sectionInput} id="documentation-section-name" required maxLength={128} disabled={saving} value={sectionName} aria-invalid={!!sectionError} aria-describedby={sectionError ? 'documentation-section-error' : undefined} onChange={event => { setSectionName(event.target.value); setSectionError(''); }} /></div>
       {sectionError ? <p id="documentation-section-error" className="form-error" role="alert">{sectionError}</p> : null}
-      <div className="form-actions"><button className="btn" type="submit">Adicionar seção</button><button className="btn tertiary" type="button" onClick={closeSectionForm}>Cancelar</button></div>
+      <div className="form-actions"><button className="btn" type="submit" disabled={saving}>{saving ? 'Salvando…' : 'Adicionar seção'}</button><button className="btn tertiary" type="button" disabled={saving} onClick={closeSectionForm}>Cancelar</button></div>
     </form> : null}
-    {draft ? <form id="documentation-form" className="catalog-form form-section column-create" onSubmit={save}>
+    {draft && canManage ? <form id="documentation-form" className="catalog-form form-section column-create" aria-busy={saving} onSubmit={event => { void save(event); }}>
       <h2 className="columns-heading">{draft.id ? 'Editar documentação' : 'Nova documentação'}</h2>
-      <div className="form-field"><label htmlFor="documentation-schema">Seção</label><select id="documentation-schema" required value={draft.schema} onChange={event => { const selected = documentationSchemas.find(value => value === event.target.value); if (selected) setDraft({ ...draft, schema: selected }); }}><option value="" disabled>Selecione uma seção</option>{documentationSchemas.map(value => <option key={value} value={value}>{value}</option>)}</select></div>
-      <div className="form-field"><label htmlFor="documentation-title">Título</label><input ref={titleInput} id="documentation-title" required maxLength={160} value={draft.title} onChange={event => setDraft({ ...draft, title: event.target.value })} /></div>
-      <div className="form-field"><label htmlFor="documentation-content">Conteúdo</label><textarea id="documentation-content" required rows={8} value={draft.content} onChange={event => setDraft({ ...draft, content: event.target.value })} /></div>
+      <div className="form-field"><label htmlFor="documentation-schema">Seção</label><select id="documentation-schema" required disabled={saving} value={draft.schema} onChange={event => { const selected = documentationSchemas.find(value => value === event.target.value); if (selected) setDraft({ ...draft, schema: selected }); }}><option value="" disabled>Selecione uma seção</option>{documentationSchemas.map(value => <option key={value} value={value}>{value}</option>)}</select></div>
+      <div className="form-field"><label htmlFor="documentation-title">Título</label><input ref={titleInput} id="documentation-title" required maxLength={160} disabled={saving} value={draft.title} onChange={event => setDraft({ ...draft, title: event.target.value })} /></div>
+      <div className="form-field"><label htmlFor="documentation-content">Conteúdo</label><textarea id="documentation-content" required rows={8} disabled={saving} value={draft.content} onChange={event => setDraft({ ...draft, content: event.target.value })} /></div>
       {error ? <p className="form-error" role="alert">{error}</p> : null}
-      <div className="form-actions"><button className="btn" type="submit">{draft.id ? 'Salvar alterações' : 'Adicionar documentação'}</button><button className="btn tertiary" type="button" onClick={closeForm}>Cancelar</button></div>
+      <div className="form-actions"><button className="btn" type="submit" disabled={saving}>{saving ? 'Salvando…' : draft.id ? 'Salvar alterações' : 'Adicionar documentação'}</button><button className="btn tertiary" type="button" disabled={saving} onClick={closeForm}>Cancelar</button></div>
     </form> : null}
     {message ? <p role="status">{message}</p> : null}
     <section aria-label="Documentações do Mottainai">
@@ -720,14 +748,15 @@ function Documentations({ documents, documentationSchemas, onChanged, onSectionC
           setExpanded(previous => new Set([...previous, target.id]));
           window.setTimeout(() => scrollDocumentation(target, targetAnchor), 0);
         }} />{item.sourceUrl && documentationAsset(item.sourceUrl, item) ? <footer className="documentation-source"><p>Origem: {item.sourcePath || decodedAnchor(documentationAsset(item.sourceUrl, item)!.pathname.slice('/documentation-files/'.length))}</p><a href={documentationAsset(item.sourceUrl, item)!.href} target="_blank" rel="noopener noreferrer" referrerPolicy="no-referrer">Ver arquivo original{item.format ? ` (${item.format.toUpperCase()})` : ''}</a></footer> : null}</div> : null}</details>
-        <div className="documentation-actions"><button className="btn tertiary" type="button" aria-label={`Editar documentação ${item.title}`} onClick={() => { setDraft({ ...item }); setError(''); setMessage(''); }}>Editar</button><button className="column-trash" type="button" aria-label={`Excluir documentação ${item.title}`} onClick={event => { removeTrigger.current = event.currentTarget; setRemoving(item); }}><svg className="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6h18M9 6V3h6v3M5 6l1 15h12l1-15M10 10v7M14 10v7" /></svg></button></div>
+        {canManage ? <div className="documentation-actions"><button className="btn tertiary" type="button" aria-label={`Editar documentação ${item.title}`} onClick={() => { setDraft({ ...item }); setError(''); setMessage(''); }}>Editar</button><button className="column-trash" type="button" aria-label={`Excluir documentação ${item.title}`} onClick={event => { removeTrigger.current = event.currentTarget; setRemoving(item); setError(''); setMessage(''); }}><svg className="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6h18M9 6V3h6v3M5 6l1 15h12l1-15M10 10v7M14 10v7" /></svg></button></div> : null}
       </article>)}</div></section>;
       })}
       {!visible.length && !groups.some(group => schema ? schema === group : !term.trim()) ? <div className="empty-state"><h2>{documents.length ? 'Nenhuma documentação encontrada' : 'Nenhuma documentação cadastrada'}</h2><p>{documents.length ? 'Tente outra seção, título ou palavra do conteúdo.' : 'Adicione uma seção ou documentação neste catálogo.'}</p></div> : null}
     </section>
     <dialog ref={dialog} className="column-dialog" aria-labelledby="delete-documentation-title" onCancel={event => { event.preventDefault(); dismissRemoval(); }} onClose={() => setRemoving(null)}>
-      <h2 id="delete-documentation-title">Excluir documentação?</h2><p>Remover <strong>{removing?.title}</strong> do catálogo desta sessão? O conteúdo original não será alterado.</p>
-      <div className="form-actions"><button className="btn secondary" type="button" autoFocus onClick={dismissRemoval}>Cancelar</button><button className="btn danger" type="button" onClick={() => { if (!removing) return; onChanged(documents.filter(item => item.id !== removing.id)); if (draft?.id === removing.id) setDraft(null); setMessage('Documentação removida do catálogo desta sessão.'); dismissRemoval(); newButton.current?.focus(); }}>Excluir documentação</button></div>
+      <h2 id="delete-documentation-title">Excluir documentação?</h2><p>Remover <strong>{removing?.title}</strong> do catálogo do Hub? O arquivo original não será alterado.</p>
+      {error ? <p className="form-error" role="alert">{error}</p> : null}
+      <div className="form-actions"><button className="btn secondary" type="button" autoFocus disabled={saving} onClick={dismissRemoval}>Cancelar</button><button className="btn danger" type="button" disabled={saving} onClick={() => { void removeDocument(); }}>{saving ? 'Excluindo…' : 'Excluir documentação'}</button></div>
     </dialog>
   </>;
 }
@@ -1302,6 +1331,7 @@ function NewTable({ term }: { term: string }) {
 }
 
 function App() {
+  const auth = useContext(AuthContext)!;
   const hash = useSyncExternalStore(subscribeToRoute, readHash);
   const [revision, setRevision] = useState(0);
   const { resource: documentationResource, retry: retryDocumentations } = useResource<DocumentationCatalog>('/api/documentations');
@@ -1309,6 +1339,18 @@ function App() {
   const documents = documentChanges ?? (documentationResource.status === 'success' ? documentationResource.data.documents : []);
   const [sectionChanges, setSectionChanges] = useState<string[]>([]);
   const documentationSchemas = [...new Set([...(documentationResource.status === 'success' ? documentationResource.data.schemas : []), ...documents.map(item => item.schema), ...sectionChanges])];
+  async function saveDocumentationCatalog(nextDocuments: Documentation[], nextSchemas = documentationSchemas) {
+    const response = await fetch('/api/documentations', {
+      method: 'POST', credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': auth.csrfToken },
+      body: JSON.stringify({ schemas: nextSchemas, documents: nextDocuments }),
+    });
+    if (response.status === 401) { auth.refresh(); throw new Error('Sua sessão expirou. Entre novamente e tente salvar.'); }
+    if (!response.ok) throw new Error(await responseError(response, 'Não foi possível salvar o catálogo de documentações.'));
+    setDocumentChanges(nextDocuments);
+    const originalSchemas = documentationResource.status === 'success' ? documentationResource.data.schemas : [];
+    setSectionChanges(nextSchemas.filter(value => !originalSchemas.includes(value)));
+  }
   const [deletionNotice, setDeletionNotice] = useState<{ target: string; name: string } | null>(null);
   const [route, routeAnchor = ''] = (hash.slice(1) || '/inicio').split('#');
   const [path, query = ''] = route.split('?');
@@ -1347,7 +1389,7 @@ function App() {
   return <Shell term={term} onSearch={search} hash={path}>
     {isCatalog && deletionNotice?.target === hash ? <p role="status">Tabela {deletionNotice.name} excluída do catálogo local. A documentação, as colunas e os scripts foram removidos; a origem e a planilha não foram alteradas.</p> : null}
     {isHome ? <Home /> : isCatalog ? <Catalog key={`${path}:${revision}`} term={term} onSearch={search} /> :
-      isDocumentation ? documentationResource.status === 'loading' ? <p role="status">Carregando documentações…</p> : documentationResource.status === 'error' ? <div className="empty-state" role="alert"><h1>Não foi possível carregar as documentações</h1><button className="btn secondary" type="button" onClick={retryDocumentations}>Tentar novamente</button></div> : <Documentations documents={documents} documentationSchemas={documentationSchemas} onChanged={setDocumentChanges} onSectionCreated={name => setSectionChanges(previous => [...previous, name])} term={term} onSearch={search} schema={documentationSchema} onSchemaChange={changeDocumentationSchema} documentId={documentationId} anchor={documentationAnchor} /> :
+      isDocumentation ? documentationResource.status === 'loading' ? <p role="status">Carregando documentações…</p> : documentationResource.status === 'error' ? <div className="empty-state" role="alert"><h1>Não foi possível carregar as documentações</h1><button className="btn secondary" type="button" onClick={retryDocumentations}>Tentar novamente</button></div> : <Documentations documents={documents} documentationSchemas={documentationSchemas} onChanged={saveDocumentationCatalog} onSectionCreated={name => saveDocumentationCatalog(documents, [...documentationSchemas, name])} term={term} onSearch={search} schema={documentationSchema} onSchemaChange={changeDocumentationSchema} documentId={documentationId} anchor={documentationAnchor} /> :
       path === '/nova-tabela' ? <NewTable term={term} /> :
         path === '/solicitacoes' ? <RequestsPage key={`solic:${revision}`} /> :
           /^\/solicitacoes\/[^/]+$/.test(path) ? <RequestsPage key={path} requestId={decodeURIComponent(path.slice('/solicitacoes/'.length))} /> :
