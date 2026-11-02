@@ -1,5 +1,6 @@
 import http.client
 import hashlib
+import os
 import time
 import json
 import sqlite3
@@ -249,7 +250,9 @@ class ImportTests(DatabaseTests):
             self.assertIn('dictionary.xlsx', overview['source'])
         with closing(read_connection(Path(report['backup']))) as connection:
             self.assertEqual(len(list_tables(connection, '')), 48)
-        self.assertEqual(Path(report['backup']).stat().st_mode & 0o777, 0o600)
+        # POSIX exposes the restrictive mode bits; Windows chmod semantics differ.
+        if os.name != 'nt':
+            self.assertEqual(Path(report['backup']).stat().st_mode & 0o777, 0o600)
 
     def test_reimport_is_idempotent_and_local_edits_are_not_overwritten(self):
         import_catalog(self.database, self.xlsx)
@@ -465,7 +468,12 @@ class APITests(unittest.TestCase):
             self.assertEqual(self.request('/documentation-files/dad/bad.exe')[0], 404)
             for path in ('/documentation-files/../documentations.json', '/documentation-files/%2e%2e/documentations.json', '/documentation-files/dad/missing.pdf', url + '?x=1'):
                 self.assertEqual(self.request(path)[0], 404)
-            (sources / 'escape.pdf').symlink_to(root / 'documentations.json')
+            try:
+                (sources / 'escape.pdf').symlink_to(root / 'documentations.json')
+            except OSError as error:
+                if os.name == 'nt' and getattr(error, 'winerror', None) == 1314:
+                    self.skipTest('Criar symlink no Windows requer Developer Mode ou privilégio elevado.')
+                raise
             self.assertEqual(self.request('/documentation-files/dad/escape.pdf')[0], 404)
             self.assertEqual(self.request('/api/documentations?x=1')[0], 400)
             self.assertEqual(self.request(url, headers={'Origin': 'https://attacker.invalid'})[0], 403)

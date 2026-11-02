@@ -1,0 +1,71 @@
+name: CI and Render deployment
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      deploy:
+        description: Deploy the tested main revision to Render
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  validate:
+    name: Test and build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: motta-hub
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: motta-hub/requirements.txt
+
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt
+
+      - name: Run unit and API tests
+        run: python -m unittest -v test_server
+
+      - name: Build documentation catalog
+        run: python render_build.py
+
+  deploy:
+    name: Deploy to Render
+    needs: validate
+    runs-on: ubuntu-latest
+    if: >-
+      (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
+      (github.event_name == 'workflow_dispatch' && inputs.deploy)
+    steps:
+      - name: Trigger Render deploy
+        env:
+          RENDER_DEPLOY_HOOK_URL: ${{ secrets.RENDER_DEPLOY_HOOK_URL }}
+        run: |
+          set -euo pipefail
+          if [[ -z "$RENDER_DEPLOY_HOOK_URL" ]]; then
+            echo "::notice::Render deploy skipped; configure the RENDER_DEPLOY_HOOK_URL repository secret."
+            exit 0
+          fi
+          status="$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' --request POST "$RENDER_DEPLOY_HOOK_URL")"
+          case "$status" in
+            200|202) echo "Render accepted deployment request (HTTP $status)." ;;
+            *) echo "Render rejected deployment request (HTTP $status)." >&2; exit 1 ;;
+          esac
