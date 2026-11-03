@@ -39,7 +39,7 @@ A CI executa esses comandos em Pull Requests e antes de solicitar implantação 
 
 ## Hospedagem e implantação
 
-O Blueprint declara o serviço web no Render; a aplicação pode usar o PostgreSQL Aiven existente como persistência do catálogo publicado por meio de `HUB_DATABASE_URL`. O Render usa também `BOOTSTRAP_USERS_JSON` como variável privada do serviço; o GitHub usa `RENDER_DEPLOY_HOOK_URL` como segredo para acionar o deploy depois da CI. Nunca versionar valores dessas variáveis.
+O Blueprint declara o serviço web no Render; a aplicação pode usar o PostgreSQL Aiven existente como persistência do catálogo publicado por meio de `HUB_DATABASE_URL`. O Render usa também `BOOTSTRAP_USERS_JSON` como variável privada do serviço. O Blueprint configura `autoDeployTrigger: checksPass`, para o Render implantar o commit vinculado somente após os checks do GitHub concluírem com sucesso. Não é necessário um deploy hook ou segredo de deploy no GitHub. Nunca versionar valores privados das variáveis de ambiente.
 
 O repositório conter o Blueprint não prova que o serviço tenha sido criado, que os segredos estejam configurados ou que exista uma URL ativa. A implantação só é considerada concluída quando o serviço é sincronizado no Render, a CI aciona o deploy e `/healthz` responde com sucesso. Esta configuração não aloca recursos na AWS.
 
