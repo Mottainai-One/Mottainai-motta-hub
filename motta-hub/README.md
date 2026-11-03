@@ -76,7 +76,7 @@ python render_build.py
 
 O Blueprint [`../render.yaml`](../render.yaml) configura o serviço web. O build instala `requirements.txt`, executa a suíte Python e recria o catálogo a partir da planilha incluída no repositório. O servidor escuta em `0.0.0.0:$PORT`, valida o domínio HTTPS do Render e oferece `/healthz` para o health check.
 
-O arquivo Blueprint é configuração versionada; por si só, não comprova que o serviço esteja criado ou acessível. A automação de implantação está em [`.github/workflows/ci-cd.yml`](../.github/workflows/ci-cd.yml): PRs executam testes; pushes aprovados em `main` podem acionar o deploy após a CI. O Blueprint desativa deploy automático do provedor para que a Action controle a promoção. Configure o segredo `RENDER_DEPLOY_HOOK_URL` nas Actions do GitHub usando a URL privada obtida no Render. Sem esse segredo, a etapa de deploy informa que foi ignorada; não considere a aplicação publicada.
+O arquivo Blueprint é configuração versionada; por si só, não comprova que o serviço esteja criado ou acessível. A automação de implantação está no [workflow CI](../.github/workflows/ci-cd.yml): PRs executam testes e build; depois do merge em `main`, o Render usa `autoDeployTrigger: checksPass` para publicar o commit vinculado somente após os checks do GitHub passarem. Essa integração oficial elimina o deploy hook estático e seu segredo. Após sincronizar o Blueprint no serviço Render, confirme o deploy no painel e valide `/healthz`.
 
 Em produção, configure `BOOTSTRAP_USERS_JSON` na página Environment do serviço. A variável deve conter as 12 contas com `email`, `role` e `passwordHash`; os papéis são 4 DBA, 4 FULLSTACK e 4 USER. Não inclua esse conteúdo no repositório. As senhas precisam permanecer como hashes bcrypt (`$2b$...`); o login não aceita senha em texto puro no campo `password_hash`.
 
@@ -88,5 +88,4 @@ O Blueprint mantém o serviço web no plano gratuito. Para persistir alteraçõe
 
 No Render, adicione `HUB_DATABASE_URL` nas variáveis de ambiente do serviço, apontando para o database `mottainai` com conectividade de rede permitida pelo provedor do PostgreSQL. Use a URL privada quando o banco estiver na mesma rede privada. Não coloque a URL no repositório nem em mensagens. Sem a variável, o serviço de produção não inicia para evitar continuar aceitando alterações sem persistência durável.
 
-Não há alocação ou deploy na AWS nesta configuração. A hospedagem prevista para este Hub é Render com PostgreSQL Aiven existente; ativá-la requer criar/sincronizar o Blueprint, provisionar os segredos no painel do Render e cadastrar o deploy hook como segredo do GitHub. Não publique contas, hashes, URLs de conexão ou hooks no Git.
-
+Não há alocação ou deploy na AWS nesta configuração. A hospedagem deste Hub é Render com PostgreSQL Aiven existente; ativá-la requer criar/sincronizar o Blueprint e provisionar os segredos no painel do Render. Não publique contas, hashes ou URLs de conexão no Git.

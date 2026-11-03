@@ -5,13 +5,6 @@ on:
     branches: [main]
   push:
     branches: [main]
-  workflow_dispatch:
-    inputs:
-      deploy:
-        description: Deploy the tested main revision to Render
-        required: true
-        default: false
-        type: boolean
 
 permissions:
   contents: read
@@ -101,27 +94,3 @@ jobs:
       - name: Stop containerized services
         if: always()
         run: docker compose down --volumes
-
-  deploy:
-    name: Deploy to Render
-    needs: validate
-    runs-on: ubuntu-latest
-    if: >-
-      (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
-      (github.event_name == 'workflow_dispatch' && inputs.deploy)
-    steps:
-      - name: Trigger Render deploy
-        env:
-          RENDER_DEPLOY_HOOK_URL: ${{ secrets.RENDER_DEPLOY_HOOK_URL }}
-        run: |
-          set -euo pipefail
-          if [[ -z "$RENDER_DEPLOY_HOOK_URL" ]]; then
-            echo "::notice::Render deploy skipped; configure the RENDER_DEPLOY_HOOK_URL repository secret."
-            exit 0
-          fi
-          status="$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' --request POST "$RENDER_DEPLOY_HOOK_URL")"
-          case "$status" in
-            200|202) echo "Render accepted deployment request (HTTP $status)." ;;
-            *) echo "Render rejected deployment request (HTTP $status)." >&2; exit 1 ;;
-          esac
-
